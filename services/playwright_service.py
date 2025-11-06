@@ -120,13 +120,33 @@ class PlaywrightService:
             logger.warning("API key de 2Captcha no configurada. El servicio funcionará sin resolver captchas automáticamente.")
     
     def _get_context_options(self) -> Dict:
-        """Retorna las opciones de contexto del navegador."""
+        """Retorna las opciones de contexto del navegador con anti-detección."""
         return {
             "ignore_https_errors": True,
             "user_agent": self.USER_AGENT,
             "viewport": {"width": 1920, "height": 1080},
             "locale": "es-AR",
-            "timezone_id": "America/Argentina/Buenos_Aires"
+            "timezone_id": "America/Argentina/Buenos_Aires",
+            # Anti-detección: propiedades adicionales
+            "permissions": ["geolocation"],
+            "geolocation": {"latitude": -34.6037, "longitude": -58.3816},  # Buenos Aires
+            "color_scheme": "light",
+            "reduced_motion": "no-preference",
+            "forced_colors": "none",
+            # Headers adicionales para parecer más real
+            "extra_http_headers": {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Cache-Control": "max-age=0"
+            }
         }
     
     def _apply_stealth(self, context: BrowserContext):
@@ -134,8 +154,43 @@ class PlaywrightService:
         if STEALTH_AVAILABLE and stealth_sync_func:
             try:
                 stealth_sync_func(context)
+                logger.info("Stealth aplicado correctamente")
             except Exception as e:
                 logger.warning(f"No se pudo aplicar stealth: {e}")
+        
+        # Aplicar scripts adicionales anti-detección
+        try:
+            context.add_init_script("""
+                // Ocultar webdriver
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // Modificar plugins
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                
+                // Modificar languages
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['es-AR', 'es', 'en-US', 'en']
+                });
+                
+                // Modificar permissions
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+                
+                // Chrome runtime
+                window.chrome = {
+                    runtime: {}
+                };
+            """)
+        except Exception as e:
+            logger.debug(f"Error aplicando scripts anti-detección: {e}")
     
     def _realizar_login(self, page: Page) -> Page:
         """Realiza el proceso de login y retorna la página de servicios."""
@@ -175,6 +230,10 @@ class PlaywrightService:
             except Exception as e:
                 logger.warning(f"Timeout esperando carga de página post-login: {e}")
             
+            # Esperar más tiempo para que el portal cargue completamente
+            logger.info("Esperando a que el portal cargue completamente...")
+            time.sleep(3)
+            
             # Intentar múltiples formas de encontrar el enlace a e-Servicios SRT
             logger.info("Buscando enlace 'e-Servicios SRT'...")
             servicios_link = None
@@ -208,12 +267,15 @@ class PlaywrightService:
             if not link_found:
                 logger.info("No se encontró con selectores específicos, buscando en todos los enlaces...")
                 try:
+                    # Esperar un poco más y buscar en iframes también
+                    time.sleep(2)
                     all_links = login_page.locator("a").all()
+                    logger.info(f"Encontrados {len(all_links)} enlaces en la página")
                     for link in all_links:
                         try:
                             text = link.inner_text(timeout=1000).lower()
                             href = link.get_attribute("href") or ""
-                            if "srt" in text or "servicios" in text or "srt" in href.lower():
+                            if "srt" in text or "servicios" in text or "srt" in href.lower() or "eservicios" in href.lower():
                                 logger.info(f"Enlace encontrado por texto/href: {text[:50]} - {href[:50]}")
                                 servicios_link = link
                                 link_found = True
@@ -227,17 +289,70 @@ class PlaywrightService:
             if not link_found:
                 logger.warning("No se encontró el enlace 'e-Servicios SRT', intentando navegar directamente...")
                 try:
-                    # Intentar navegar directamente a la URL de servicios SRT
-                    logger.info(f"Navegando directamente a {self.ALICUOTAS_URL}")
-                    servicios_page = login_page.context.new_page()
+                    # ESTRATEGIA: Usar la misma página del portal en lugar de crear una nueva
+                    # Esto mantiene las cookies y la sesión, reduciendo detección de bot
+                    logger.info("Usando la misma página del portal para mantener sesión...")
+                    
+                    # Simular comportamiento humano: hacer scroll y mover el mouse
+                    logger.info("Simulando comportamiento humano antes de navegar...")
+                    try:
+                        login_page.evaluate("window.scrollTo(0, 100)")
+                        time.sleep(random.uniform(0.5, 1.5))
+                        login_page.evaluate("window.scrollTo(0, 0)")
+                        time.sleep(random.uniform(0.3, 0.8))
+                    except:
+                        pass
+                    
+                    # Intentar navegar usando la misma página (mantiene cookies/sesión)
+                    logger.info(f"Navegando a {self.ALICUOTAS_URL} usando la misma sesión...")
+                    servicios_page = login_page
                     servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
                     
                     # Verificar que no fuimos redirigidos (detección de bot)
                     final_url = servicios_page.url
+                    page_title = servicios_page.title()
                     logger.info(f"URL final después de navegación: {final_url}")
+                    logger.info(f"Título de la página: {page_title}")
                     
-                    if "alicuotas" not in final_url.lower() and "srt" not in final_url.lower():
-                        logger.warning(f"Posible redirección detectada. URL esperada contenía 'alicuotas' o 'srt', pero se obtuvo: {final_url}")
+                    # Detectar si fuimos redirigidos a una página de error
+                    if "errorvalidate" in final_url.lower() or "error" in page_title.lower():
+                        logger.error(f"Redirección a página de error detectada: {final_url} - {page_title}")
+                        logger.error("El sitio está detectando el bot y bloqueando el acceso")
+                        logger.info("Intentando estrategia alternativa: usar el contexto de la sesión del portal...")
+                        
+                        # ESTRATEGIA: Usar la misma página del portal (mantiene cookies/sesión)
+                        logger.info("Usando la misma página del portal para mantener cookies y sesión...")
+                        servicios_page = login_page
+                        
+                        # Simular comportamiento humano antes de navegar
+                        logger.info("Simulando interacción humana...")
+                        try:
+                            # Hacer scroll
+                            servicios_page.evaluate("window.scrollTo(0, Math.random() * 200)")
+                            time.sleep(random.uniform(1, 2))
+                            # Mover mouse (simulado)
+                            servicios_page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+                            time.sleep(random.uniform(0.5, 1.5))
+                        except:
+                            pass
+                        
+                        # Esperar un poco más para simular comportamiento humano
+                        time.sleep(random.uniform(2, 4))
+                        
+                        # Intentar navegar de nuevo usando la misma página
+                        logger.info("Reintentando navegación con la misma sesión...")
+                        servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                        final_url = servicios_page.url
+                        page_title = servicios_page.title()
+                        logger.info(f"URL después de segundo intento: {final_url}")
+                        logger.info(f"Título después de segundo intento: {page_title}")
+                        
+                        if "errorvalidate" in final_url.lower() or "error" in page_title.lower():
+                            logger.error("Segundo intento también resultó en error. El sitio está bloqueando el acceso.")
+                            raise Exception(f"El sitio está bloqueando el acceso (redirigido a: {final_url}). Puede ser detección de bot.")
+                    
+                    if "alicuotas" not in final_url.lower() and "srt" not in final_url.lower() and "error" not in final_url.lower():
+                        logger.warning(f"URL final diferente a la esperada: {final_url}")
                         logger.warning("Esto puede indicar detección de bot. Intentando esperar y recargar...")
                         time.sleep(3)
                         servicios_page.reload(wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
@@ -246,7 +361,7 @@ class PlaywrightService:
                     
                     if final_url == self.ALICUOTAS_URL or "alicuotas" in final_url.lower():
                         logger.info("Navegación directa exitosa, estamos en la página correcta")
-                    else:
+                    elif "error" not in final_url.lower():
                         logger.warning(f"URL final diferente a la esperada, pero continuando: {final_url}")
                         
                 except Exception as e:
