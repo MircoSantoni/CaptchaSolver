@@ -274,19 +274,32 @@ class PlaywrightService:
             if servicios_page is None:
                 raise Exception("No se pudo obtener la página de servicios después del login")
             
-            logger.info("Haciendo clic en botón de servicios...")
-            try:
-                servicios_page.locator(self.SELECTOR_SERVICIOS_BUTTON).click(timeout=self.TIMEOUT_FIELD_WAIT)
-                logger.info("Botón de servicios clickeado")
-            except Exception as e:
-                logger.warning(f"No se pudo hacer clic en el botón de servicios: {e}")
-                # Continuar de todas formas, puede que ya estemos en la página correcta
+            # Si navegamos directamente, ya estamos en la página de alícuotas, no necesitamos hacer clic en botones
+            if not link_found:
+                logger.info("Navegación directa realizada, verificando que estamos en la página correcta...")
+                # Ya estamos en la URL de alícuotas, solo verificamos que cargó
+                try:
+                    servicios_page.wait_for_load_state("networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                    logger.info("Página de alícuotas cargada correctamente")
+                except Exception as e:
+                    logger.warning(f"Timeout esperando carga de página: {e}")
+            else:
+                # Si encontramos el enlace y lo clickeamos, entonces sí necesitamos hacer clic en el botón
+                logger.info("Haciendo clic en botón de servicios...")
+                try:
+                    servicios_page.locator(self.SELECTOR_SERVICIOS_BUTTON).click(timeout=self.TIMEOUT_FIELD_WAIT)
+                    logger.info("Botón de servicios clickeado")
+                except Exception as e:
+                    logger.warning(f"No se pudo hacer clic en el botón de servicios: {e}")
+                    # Continuar de todas formas, puede que ya estemos en la página correcta
             
+            # Verificar que el captcha está presente (puede tardar en cargar)
             try:
                 servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, timeout=self.TIMEOUT_PAGE_LOAD)
                 logger.info("Página y captcha cargados completamente")
             except Exception as e:
                 logger.warning(f"No se pudo verificar carga del captcha: {e}")
+                # No es crítico, el captcha puede cargarse más tarde
                 time.sleep(2)
             
             return servicios_page
@@ -339,6 +352,16 @@ class PlaywrightService:
         self.captcha_resolviendo = True
         self.captcha_resuelto = False
         try:
+            # Esperar a que el captcha esté completamente cargado
+            logger.info("Esperando a que el captcha esté completamente cargado...")
+            try:
+                self.servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, timeout=self.TIMEOUT_PAGE_LOAD)
+                logger.info("Iframe del captcha encontrado")
+                time.sleep(2)  # Dar tiempo adicional para que el captcha se inicialice
+            except Exception as e:
+                logger.warning(f"Timeout esperando iframe del captcha: {e}")
+                # Continuar de todas formas, puede que el captcha ya esté cargado
+            
             with Timer("Resolver captcha en startup"):
                 self._resolver_captcha(self.servicios_page)
                 token = self._obtener_token_captcha(self.servicios_page)
@@ -714,10 +737,15 @@ class PlaywrightService:
     def _resolver_captcha_con_servicio(self, page: Page, iframe_locator) -> bool:
         """Intenta resolver el captcha usando 2Captcha."""
         try:
+            if not self.twocaptcha_service:
+                logger.info("2Captcha no está disponible, usando método manual")
+                return False
+            
             page_url = page.url
             site_key = self._extraer_site_key(page, iframe_locator)
             
             if not site_key:
+                logger.warning("No se pudo extraer el site_key del captcha, usando método manual")
                 return False
             
             logger.info(f"Resolviendo reCAPTCHA con 2Captcha (site_key: {site_key[:20]}...)")
@@ -725,6 +753,7 @@ class PlaywrightService:
                 token = self.twocaptcha_service.solve_recaptcha_v2(page_url, site_key)
             
             if not token:
+                logger.warning("2Captcha no pudo resolver el captcha, usando método manual")
                 return False
             
             logger.info(f"Token obtenido (longitud: {len(token)})")
@@ -736,8 +765,9 @@ class PlaywrightService:
                 time.sleep(self.DELAY_LONG)
                 logger.info("reCAPTCHA resuelto exitosamente con 2Captcha")
                 return True
-            
-            return False
+            else:
+                logger.warning(f"Token inyectado pero textarea no encontrado. Result: {result}")
+                return False
                 
         except Exception as e:
             logger.error(f"Error al resolver con 2Captcha: {e}", exc_info=True)
