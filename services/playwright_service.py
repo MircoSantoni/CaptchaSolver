@@ -333,13 +333,20 @@ class PlaywrightService:
             
             self.session_ready = True
             logger.info("Sesión del navegador inicializada y lista para recibir requests")
-            logger.info("Frontend disponible inmediatamente. Resolviendo captcha...")
             
-            # Resolver captcha directamente en el mismo thread (Playwright no es thread-safe)
+            # El captcha solo aparece cuando se intenta hacer una consulta, no en el startup
+            # Intentar resolverlo en el startup solo si está visible
+            logger.info("Verificando si el captcha está disponible para resolver en startup...")
             try:
-                self._resolver_captcha_inicial()
+                # Verificar si el captcha está presente (puede que no esté cargado aún)
+                captcha_visible = self.servicios_page.locator(self.SELECTOR_CAPTCHA_IFRAME).count() > 0
+                if captcha_visible:
+                    logger.info("Captcha detectado, intentando resolver en startup...")
+                    self._resolver_captcha_inicial()
+                else:
+                    logger.info("Captcha no está visible aún. Se resolverá cuando se haga la primera consulta.")
             except Exception as e:
-                logger.warning(f"No se pudo resolver captcha en startup: {e}. Se resolverá cuando sea necesario.")
+                logger.info(f"Captcha no disponible en startup: {e}. Se resolverá cuando sea necesario.")
             
         except Exception as e:
             logger.error(f"Error al inicializar sesión: {e}", exc_info=True)
@@ -352,15 +359,15 @@ class PlaywrightService:
         self.captcha_resolviendo = True
         self.captcha_resuelto = False
         try:
-            # Esperar a que el captcha esté completamente cargado
+            # Esperar a que el captcha esté completamente cargado y visible
             logger.info("Esperando a que el captcha esté completamente cargado...")
             try:
-                self.servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, timeout=self.TIMEOUT_PAGE_LOAD)
-                logger.info("Iframe del captcha encontrado")
-                time.sleep(2)  # Dar tiempo adicional para que el captcha se inicialice
+                self.servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, state="visible", timeout=10000)
+                logger.info("Iframe del captcha encontrado y visible")
+                time.sleep(2)  # Dar tiempo adicional para que el captcha se inicialice completamente
             except Exception as e:
                 logger.warning(f"Timeout esperando iframe del captcha: {e}")
-                # Continuar de todas formas, puede que el captcha ya esté cargado
+                raise Exception("Captcha no está visible, se resolverá cuando sea necesario")
             
             with Timer("Resolver captcha en startup"):
                 self._resolver_captcha(self.servicios_page)
@@ -373,7 +380,7 @@ class PlaywrightService:
                     logger.warning("Captcha resuelto pero token no encontrado en textarea")
                     self.captcha_resuelto = False
         except Exception as e:
-            logger.warning(f"Error al resolver captcha en startup: {e}. Se resolverá cuando sea necesario.")
+            logger.info(f"Captcha no disponible para resolver en startup: {e}. Se resolverá cuando se haga la primera consulta.")
             self.captcha_resuelto = False
         finally:
             self.captcha_resolviendo = False
