@@ -58,7 +58,6 @@ class PlaywrightService:
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
     # Selectores
-    SELECTOR_CAPTCHA_IFRAME = "iframe[name=\"c-nz03mlr8vv5w\"]"
     SELECTOR_CUIT_FIELD = "#txtCuilCuit"
     SELECTOR_RESULT_IFRAME = "#ifrmResultadoPorCuit"
     SELECTOR_ALICUOTA_LABEL = "#lblAlicuota"
@@ -200,9 +199,34 @@ class PlaywrightService:
             logger.info("Página de login cargada")
             
             logger.info("Buscando enlace 'Iniciar sesión'...")
-            with page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
-                page.get_by_role("link", name="Iniciar sesión").click(timeout=self.TIMEOUT_FIELD_WAIT)
-            login_page = popup_info.value
+            login_link = page.get_by_role("link", name="Iniciar sesión")
+            
+            # Esperar a que el enlace esté listo
+            login_link.wait_for(state="visible", timeout=self.TIMEOUT_FIELD_WAIT)
+            time.sleep(self.DELAY_SHORT)  # Pequeño delay antes de hacer click
+            
+            # Intentar click normal, si falla usar JavaScript
+            try:
+                with page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
+                    login_link.click(timeout=self.TIMEOUT_FIELD_WAIT)
+                login_page = popup_info.value
+            except Exception as e:
+                logger.warning(f"Click normal falló, intentando con JavaScript: {e}")
+                # Usar JavaScript como alternativa
+                login_link.evaluate("element => element.click()")
+                time.sleep(1)
+                # Esperar a que aparezca el popup
+                pages = page.context.pages
+                if len(pages) > 1:
+                    login_page = pages[-1]  # La última página es el popup
+                else:
+                    # Esperar un poco más y buscar el popup
+                    time.sleep(2)
+                    pages = page.context.pages
+                    if len(pages) > 1:
+                        login_page = pages[-1]
+                    else:
+                        raise Exception("No se pudo abrir el popup de login")
             logger.info("Popup de login abierto")
             
             logger.info("Ingresando usuario...")
@@ -434,14 +458,36 @@ class PlaywrightService:
                     logger.warning(f"No se pudo hacer clic en el botón de servicios: {e}")
                     # Continuar de todas formas, puede que ya estemos en la página correcta
             
-            # Verificar que el captcha está presente (puede tardar en cargar)
+            # Esperar a que el captcha aparezca y resolverlo inmediatamente
+            logger.info("Esperando a que el captcha aparezca para resolverlo...")
             try:
-                servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, timeout=self.TIMEOUT_PAGE_LOAD)
-                logger.info("Página y captcha cargados completamente")
+                captcha_selector = None
+                for intento in range(6):  # 6 intentos de 5 segundos = 30 segundos total
+                    captcha_selector = self._encontrar_captcha_iframe(servicios_page)
+                    if captcha_selector:
+                        servicios_page.wait_for_selector(captcha_selector, state="visible", timeout=5000)
+                        logger.info("Captcha visible, resolviendo ahora...")
+                        break
+                    time.sleep(1)
+                
+                if captcha_selector:
+                    self._resolver_captcha(servicios_page)
+                    time.sleep(self.DELAY_MEDIUM)
+                    token = self._obtener_token_captcha(servicios_page)
+                    if token and len(token) > 50:
+                        self.captcha_token = token[:50] + "..."
+                        self.captcha_resuelto = True
+                        logger.info("✅ Captcha resuelto exitosamente durante el startup")
+                    else:
+                        self.captcha_resuelto = False
+                else:
+                    logger.info("Captcha no apareció aún, se resolverá cuando se ingrese un CUIT")
+                    self.captcha_resuelto = False
             except Exception as e:
-                logger.warning(f"No se pudo verificar carga del captcha: {e}")
-                # No es crítico, el captcha puede cargarse más tarde
-                time.sleep(2)
+                logger.warning(f"Error al resolver captcha durante startup: {e}")
+                self.captcha_resuelto = False
+            
+            logger.info("Página de servicios cargada")
             
             return servicios_page
             
@@ -475,56 +521,17 @@ class PlaywrightService:
             self.session_ready = True
             logger.info("Sesión del navegador inicializada y lista para recibir requests")
             
-            # El captcha solo aparece cuando se intenta hacer una consulta, no en el startup
-            # Intentar resolverlo en el startup solo si está visible
-            logger.info("Verificando si el captcha está disponible para resolver en startup...")
-            try:
-                # Verificar si el captcha está presente (puede que no esté cargado aún)
-                captcha_visible = self.servicios_page.locator(self.SELECTOR_CAPTCHA_IFRAME).count() > 0
-                if captcha_visible:
-                    logger.info("Captcha detectado, intentando resolver en startup...")
-                    self._resolver_captcha_inicial()
-                else:
-                    logger.info("Captcha no está visible aún. Se resolverá cuando se haga la primera consulta.")
-            except Exception as e:
-                logger.info(f"Captcha no disponible en startup: {e}. Se resolverá cuando sea necesario.")
+            # El captcha ya debería estar resuelto si apareció durante el login
+            if self.captcha_resuelto:
+                logger.info("✅ Captcha ya resuelto y listo para usar")
+            else:
+                logger.info("Captcha se resolverá cuando aparezca o en la primera consulta")
             
         except Exception as e:
             logger.error(f"Error al inicializar sesión: {e}", exc_info=True)
             self.session_ready = False
             raise
     
-    def _resolver_captcha_inicial(self):
-        """Resuelve el captcha durante el startup en el mismo thread."""
-        logger.info("Iniciando resolución de captcha en startup...")
-        self.captcha_resolviendo = True
-        self.captcha_resuelto = False
-        try:
-            # Esperar a que el captcha esté completamente cargado y visible
-            logger.info("Esperando a que el captcha esté completamente cargado...")
-            try:
-                self.servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, state="visible", timeout=10000)
-                logger.info("Iframe del captcha encontrado y visible")
-                time.sleep(2)  # Dar tiempo adicional para que el captcha se inicialice completamente
-            except Exception as e:
-                logger.warning(f"Timeout esperando iframe del captcha: {e}")
-                raise Exception("Captcha no está visible, se resolverá cuando sea necesario")
-            
-            with Timer("Resolver captcha en startup"):
-                self._resolver_captcha(self.servicios_page)
-                token = self._obtener_token_captcha(self.servicios_page)
-                if token and len(token) > 50:
-                    self.captcha_token = token[:50] + "..."
-                    self.captcha_resuelto = True
-                    logger.info("Captcha resuelto exitosamente en startup")
-                else:
-                    logger.warning("Captcha resuelto pero token no encontrado en textarea")
-                    self.captcha_resuelto = False
-        except Exception as e:
-            logger.info(f"Captcha no disponible para resolver en startup: {e}. Se resolverá cuando se haga la primera consulta.")
-            self.captcha_resuelto = False
-        finally:
-            self.captcha_resolviendo = False
     
     def _obtener_token_captcha(self, page: Page) -> Optional[str]:
         """Obtiene el token del captcha desde el textarea."""
@@ -629,7 +636,28 @@ class PlaywrightService:
                         
                         self._verificar_y_corregir_url(servicios_page)
                         self._ingresar_cuit(servicios_page, cuit)
+                        
+                        # Resolver captcha ANTES de hacer la consulta
+                        logger.info(f"Gestionando captcha para CUIT {cuit}...")
                         self._gestionar_captcha(servicios_page, cuit)
+                        
+                        # Verificar que el captcha se resolvió antes de continuar
+                        if not self.captcha_resuelto:
+                            logger.warning(f"Captcha no resuelto para CUIT {cuit}, reintentando...")
+                            time.sleep(2)
+                            self._gestionar_captcha(servicios_page, cuit)
+                        
+                        if not self.captcha_resuelto:
+                            logger.error(f"No se pudo resolver el captcha para CUIT {cuit}")
+                            resultados.append({
+                                "cuit": cuit,
+                                "alicuota": None,
+                                "nombre": None,
+                                "error": "No se pudo resolver el captcha"
+                            })
+                            continue
+                        
+                        logger.info(f"Captcha resuelto, procediendo con consulta para CUIT {cuit}")
                         self._consultar_alicuota(servicios_page)
                         
                         resultado = self._extraer_alicuota(servicios_page)
@@ -680,12 +708,6 @@ class PlaywrightService:
     def _cerrar_modal(self, page: Page):
         """Cierra cualquier modal abierto."""
         try:
-            page.keyboard.press("Escape")
-            time.sleep(self.DELAY_SHORT)
-        except:
-            pass
-        
-        try:
             page.evaluate("""() => {
                 document.querySelectorAll('.modal').forEach(m => {
                     m.classList.remove('in', 'show', 'fade');
@@ -695,7 +717,6 @@ class PlaywrightService:
                 document.body.classList.remove('modal-open');
                 document.body.style.overflow = '';
             }""")
-            time.sleep(self.DELAY_SHORT)
         except:
             pass
     
@@ -767,33 +788,39 @@ class PlaywrightService:
     
     def _gestionar_captcha(self, page: Page, cuit: str):
         """Gestiona la resolución del captcha."""
-        captcha_resuelto = False
-        with Timer("Verificar captcha resuelto"):
-            try:
-                token_existente = self._obtener_token_captcha(page)
-                if token_existente and len(token_existente) > 50:
-                    logger.info(f"Captcha ya resuelto encontrado en página para CUIT {cuit}, reutilizando...")
-                    captcha_resuelto = True
-                    self.captcha_token = token_existente[:50] + "..."
-                    self.captcha_resuelto = True
-                else:
-                    logger.info(f"No se encontró token de captcha resuelto para CUIT {cuit}")
-            except Exception as e:
-                logger.warning(f"Error al verificar captcha resuelto: {e}")
+        # Verificar si el captcha ya está resuelto
+        token_existente = self._obtener_token_captcha(page)
+        if token_existente and len(token_existente) > 50:
+            logger.info(f"Captcha ya resuelto para CUIT {cuit}, reutilizando...")
+            self.captcha_token = token_existente[:50] + "..."
+            self.captcha_resuelto = True
+            return
         
-        if not captcha_resuelto:
-            logger.info(f"Resolviendo captcha para CUIT {cuit}...")
-            self.captcha_resolviendo = True
+        # Si no está resuelto, resolverlo
+        logger.info(f"Resolviendo captcha para CUIT {cuit}...")
+        self.captcha_resolviendo = True
+        try:
+            captcha_selector = self._encontrar_captcha_iframe(page)
+            if captcha_selector:
+                page.wait_for_selector(captcha_selector, state="visible", timeout=self.TIMEOUT_PAGE_LOAD)
+                time.sleep(1)
+            
+            with Timer("Resolver captcha"):
+                self._resolver_captcha(page)
+                time.sleep(self.DELAY_MEDIUM)
+                token = self._obtener_token_captcha(page)
+                if token and len(token) > 50:
+                    self.captcha_token = token[:50] + "..."
+                    self.captcha_resuelto = True
+                    logger.info(f"Captcha resuelto exitosamente para CUIT {cuit}")
+                else:
+                    logger.warning(f"Captcha resuelto pero token no encontrado para CUIT {cuit}")
+                    self.captcha_resuelto = False
+        except Exception as e:
+            logger.error(f"Error al resolver captcha para CUIT {cuit}: {e}", exc_info=True)
             self.captcha_resuelto = False
-            try:
-                with Timer("Resolver captcha"):
-                    self._resolver_captcha(page)
-                    token = self._obtener_token_captcha(page)
-                    if token and len(token) > 50:
-                        self.captcha_token = token[:50] + "..."
-                        self.captcha_resuelto = True
-            finally:
-                self.captcha_resolviendo = False
+        finally:
+            self.captcha_resolviendo = False
     
     def _consultar_alicuota(self, page: Page):
         """Ejecuta la consulta de alícuota."""
@@ -869,12 +896,79 @@ class PlaywrightService:
                 return False
             return True
     
+    def _encontrar_captcha_iframe(self, page: Page) -> Optional[str]:
+        """Busca el iframe del captcha usando el método más confiable (div g-recaptcha)."""
+        # Método principal: Buscar el div g-recaptcha (más confiable y rápido)
+        try:
+            g_recaptcha = page.locator('.g-recaptcha, [data-sitekey]')
+            if g_recaptcha.count() > 0:
+                iframe_info = page.evaluate("""
+                    () => {
+                        const gRecaptcha = document.querySelector('.g-recaptcha, [data-sitekey]');
+                        if (gRecaptcha) {
+                            const iframe = gRecaptcha.querySelector('iframe');
+                            if (iframe) {
+                                return {
+                                    found: true,
+                                    name: iframe.getAttribute('name'),
+                                    title: iframe.getAttribute('title'),
+                                    src: iframe.getAttribute('src')
+                                };
+                            }
+                        }
+                        return { found: false };
+                    }
+                """)
+                
+                if iframe_info.get('found'):
+                    name = iframe_info.get('name')
+                    if name:
+                        selector = f'iframe[name="{name}"]'
+                        logger.info(f"✅ Captcha encontrado: {selector}")
+                        return selector
+        except Exception as e:
+            logger.debug(f"Búsqueda por div g-recaptcha falló: {e}")
+        
+        # Fallback: Buscar iframes con src que contenga 'recaptcha'
+        try:
+            iframe_info = page.evaluate("""
+                () => {
+                    const iframes = document.querySelectorAll('iframe');
+                    for (const iframe of iframes) {
+                        const src = iframe.getAttribute('src') || '';
+                        const name = iframe.getAttribute('name') || '';
+                        if (src.includes('recaptcha') || src.includes('googleapis') || 
+                            name.startsWith('a-') || name.startsWith('c-')) {
+                            return {
+                                found: true,
+                                name: name,
+                                src: src
+                            };
+                        }
+                    }
+                    return { found: false };
+                }
+            """)
+            
+            if iframe_info.get('found'):
+                name = iframe_info.get('name')
+                if name:
+                    selector = f'iframe[name="{name}"]'
+                    logger.info(f"Captcha encontrado (fallback): {selector}")
+                    return selector
+        except Exception as e:
+            logger.debug(f"Búsqueda fallback falló: {e}")
+        
+        logger.warning("No se pudo encontrar el iframe del captcha")
+        return None
+    
     def _resolver_captcha(self, page: Page):
         """Resuelve el captcha usando 2Captcha o método manual."""
-        logger.info("Iniciando resolución de captcha...")
-        time.sleep(self.DELAY_MEDIUM)
+        captcha_selector = self._encontrar_captcha_iframe(page)
+        if not captcha_selector:
+            raise Exception("Captcha iframe no está presente")
         
-        iframe_locator = page.frame_locator(self.SELECTOR_CAPTCHA_IFRAME)
+        iframe_locator = page.frame_locator(captcha_selector)
         
         if self.twocaptcha_service and self._resolver_captcha_con_servicio(page, iframe_locator):
             return
@@ -980,26 +1074,54 @@ class PlaywrightService:
     
     def _resolver_captcha_manual(self, iframe_locator):
         """Resuelve el captcha manualmente."""
+        logger.info("Iniciando resolución manual del captcha...")
         numeros_captcha = self._generar_secuencia_captcha()
-        for numero in numeros_captcha:
-            iframe_locator.locator(f"[id=\"\\3{numero}\"]").click()
-        iframe_locator.get_by_role("button", name="Verificar").click()
+        logger.info(f"Secuencia de números generada: {numeros_captcha}")
+        
+        try:
+            for i, numero in enumerate(numeros_captcha, 1):
+                logger.debug(f"Haciendo clic en número {i}/{len(numeros_captcha)}: {numero}")
+                try:
+                    elemento = iframe_locator.locator(f"[id=\"\\3{numero}\"]")
+                    elemento.wait_for(state="visible", timeout=5000)
+                    elemento.click(timeout=5000)
+                    time.sleep(random.uniform(0.3, 0.6))  # Delay aleatorio entre clicks
+                except Exception as e:
+                    logger.warning(f"Error al hacer clic en número {numero}: {e}")
+                    # Continuar con el siguiente número
+                    continue
+            
+            logger.info("Haciendo clic en botón Verificar...")
+            try:
+                boton_verificar = iframe_locator.get_by_role("button", name="Verificar")
+                boton_verificar.wait_for(state="visible", timeout=5000)
+                boton_verificar.click(timeout=5000)
+                logger.info("Botón Verificar clickeado")
+                time.sleep(2)  # Esperar a que el captcha se procese
+            except Exception as e:
+                logger.error(f"Error al hacer clic en botón Verificar: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Error durante resolución manual del captcha: {e}", exc_info=True)
+            raise
     
     def _extraer_site_key(self, page: Page, iframe_locator) -> Optional[str]:
         """Extrae el site key del captcha."""
         try:
-            # Método 1: Iframe src
-            iframe_element = page.locator(self.SELECTOR_CAPTCHA_IFRAME)
-            if iframe_element.count() > 0:
-                iframe_src = iframe_element.get_attribute("src")
-                if iframe_src:
-                    for pattern in [r'[?&]k=([^&]+)', r'sitekey=([^&]+)', r'[?&]sitekey=([^&]+)']:
-                        match = re.search(pattern, iframe_src)
-                        if match:
-                            logger.info(f"Site key encontrado: {match.group(1)[:20]}...")
-                            return match.group(1)
+            # Método 1: Iframe src - buscar el captcha de manera flexible
+            captcha_selector = self._encontrar_captcha_iframe(page)
+            if captcha_selector:
+                iframe_element = page.locator(captcha_selector)
+                if iframe_element.count() > 0:
+                    iframe_src = iframe_element.get_attribute("src")
+                    if iframe_src:
+                        for pattern in [r'[?&]k=([^&]+)', r'sitekey=([^&]+)', r'[?&]sitekey=([^&]+)']:
+                            match = re.search(pattern, iframe_src)
+                            if match:
+                                logger.info(f"Site key encontrado: {match.group(1)[:20]}...")
+                                return match.group(1)
             
-            # Método 2: HTML content
+            # Método 2: HTML content (extraer desde el div g-recaptcha o data-sitekey)
             page_content = page.content()
             patterns = [
                 r'data-sitekey=["\']([^"\']+)["\']',
@@ -1019,13 +1141,6 @@ class PlaywrightService:
             logger.warning(f"Error al extraer site_key: {e}")
             return None
     
-    def _verificar_captcha_resuelto(self, page: Page, iframe_locator) -> bool:
-        """Verifica si el captcha está resuelto."""
-        try:
-            token = self._obtener_token_captcha(page)
-            return token and len(token) > 50
-        except:
-            return False
     
     def _generar_secuencia_captcha(self) -> List[str]:
         """Genera una secuencia aleatoria de números para el captcha manual."""
