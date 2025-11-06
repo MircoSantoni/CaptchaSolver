@@ -5,8 +5,30 @@ import re
 from typing import List, Optional, Dict
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
-from playwright_stealth import Stealth
 import logging
+
+# Intentar importar playwright_stealth (versión < 2.0.0 usa stealth_sync como función)
+STEALTH_AVAILABLE = False
+stealth_sync_func = None
+
+try:
+    # Para playwright-stealth < 2.0.0: stealth_sync es una función
+    from playwright_stealth import stealth_sync as stealth_sync_func
+    STEALTH_AVAILABLE = True
+except ImportError:
+    try:
+        # Alternativa: desde el submódulo
+        from playwright_stealth.stealth import stealth_sync as stealth_sync_func
+        STEALTH_AVAILABLE = True
+    except (ImportError, AttributeError):
+        try:
+            # Intentar importar el módulo completo
+            import playwright_stealth
+            if hasattr(playwright_stealth, 'stealth_sync'):
+                stealth_sync_func = playwright_stealth.stealth_sync
+                STEALTH_AVAILABLE = True
+        except (ImportError, AttributeError):
+            logging.warning("playwright_stealth no disponible, continuando sin stealth")
 
 from services.twocaptcha_service import TwoCaptchaService
 
@@ -106,12 +128,13 @@ class PlaywrightService:
             "timezone_id": "America/Argentina/Buenos_Aires"
         }
     
-    def _get_stealth_config(self) -> Stealth:
-        """Retorna la configuración de stealth."""
-        return Stealth(
-            navigator_languages_override=('es-AR', 'es', 'en'),
-            navigator_platform_override='Win32'
-        )
+    def _apply_stealth(self, context: BrowserContext):
+        """Aplica configuración stealth al contexto."""
+        if STEALTH_AVAILABLE and stealth_sync_func:
+            try:
+                stealth_sync_func(context)
+            except Exception as e:
+                logger.warning(f"No se pudo aplicar stealth: {e}")
     
     def _realizar_login(self, page: Page) -> Page:
         """Realiza el proceso de login y retorna la página de servicios."""
@@ -151,13 +174,12 @@ class PlaywrightService:
         try:
             logger.info("Inicializando sesión del navegador...")
             
-            stealth = self._get_stealth_config()
             context_options = self._get_context_options()
             
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.firefox.launch(headless=self.headless)
             self.context = self.browser.new_context(**context_options)
-            stealth.apply_stealth_sync(self.context)
+            self._apply_stealth(self.context)
             self.page = self.context.new_page()
             
             logger.info("Iniciando sesión...")
