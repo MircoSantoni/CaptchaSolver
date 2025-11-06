@@ -231,7 +231,24 @@ class PlaywrightService:
                     logger.info(f"Navegando directamente a {self.ALICUOTAS_URL}")
                     servicios_page = login_page.context.new_page()
                     servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
-                    logger.info("Navegación directa exitosa")
+                    
+                    # Verificar que no fuimos redirigidos (detección de bot)
+                    final_url = servicios_page.url
+                    logger.info(f"URL final después de navegación: {final_url}")
+                    
+                    if "alicuotas" not in final_url.lower() and "srt" not in final_url.lower():
+                        logger.warning(f"Posible redirección detectada. URL esperada contenía 'alicuotas' o 'srt', pero se obtuvo: {final_url}")
+                        logger.warning("Esto puede indicar detección de bot. Intentando esperar y recargar...")
+                        time.sleep(3)
+                        servicios_page.reload(wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                        final_url = servicios_page.url
+                        logger.info(f"URL después de recargar: {final_url}")
+                    
+                    if final_url == self.ALICUOTAS_URL or "alicuotas" in final_url.lower():
+                        logger.info("Navegación directa exitosa, estamos en la página correcta")
+                    else:
+                        logger.warning(f"URL final diferente a la esperada, pero continuando: {final_url}")
+                        
                 except Exception as e:
                     logger.error(f"Error al navegar directamente: {e}")
                     # Si falla, intentar desde la página actual
@@ -239,6 +256,7 @@ class PlaywrightService:
                         servicios_page = login_page.context.new_page()
                         servicios_page.goto("https://eservicios.srt.gob.ar", wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
                         logger.info("Navegación a dominio SRT exitosa")
+                        time.sleep(2)  # Esperar antes de continuar
                     except Exception as e2:
                         logger.error(f"Error al navegar al dominio SRT: {e2}")
                         # Intentar obtener el HTML de la página para debugging
@@ -281,6 +299,14 @@ class PlaywrightService:
                 try:
                     servicios_page.wait_for_load_state("networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
                     logger.info("Página de alícuotas cargada correctamente")
+                    
+                    # Verificar que la página tiene el contenido esperado (no fue bloqueada)
+                    page_title = servicios_page.title()
+                    logger.info(f"Título de la página: {page_title}")
+                    
+                    # Esperar un poco más para que cualquier script de detección se ejecute
+                    time.sleep(2)
+                    
                 except Exception as e:
                     logger.warning(f"Timeout esperando carga de página: {e}")
             else:
