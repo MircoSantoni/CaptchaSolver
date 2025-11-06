@@ -1,0 +1,64 @@
+# Entornos virtuales
+venv/
+env/
+ENV/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Archivos de entorno (se configuran en Railway)
+.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentación
+*.md
+!README.md
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Archivos temporales
+*.tmp
+*.temp
+.cache/
+
+# Archivos de instalación
+install.bat
+*.txt
+!requirements.txt
+
+# Directorio Java (si no se usa)
+src/
+
+# Archivos de prueba
+test/
+tests/
+*_test.py
+*_tests.py
+
