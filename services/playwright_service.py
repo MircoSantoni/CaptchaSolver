@@ -55,7 +55,7 @@ class PlaywrightService:
     # Constantes
     LOGIN_URL = "https://arca.gob.ar/landing/default.asp"
     ALICUOTAS_URL = "https://eservicios.srt.gob.ar/Consultas/Alicuotas/Default.aspx"
-    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     
     # Selectores
     SELECTOR_CUIT_FIELD = "#txtCuilCuit"
@@ -366,7 +366,24 @@ class PlaywrightService:
                 except Exception as e:
                     logger.debug(f"Error buscando en todos los enlaces: {e}")
             
-            # SIEMPRE intentar navegar directamente si no se encontró el enlace
+            # Si no encontramos el enlace, intentar buscar en iframes o esperar más
+            if not link_found:
+                logger.info("Esperando más tiempo para que el portal cargue completamente...")
+                time.sleep(random.uniform(3, 5))
+                
+                # Intentar buscar de nuevo después de esperar
+                for i, selector_func in enumerate(selectores):
+                    try:
+                        servicios_link = selector_func(login_page)
+                        count = servicios_link.count()
+                        if count > 0:
+                            logger.info(f"Enlace encontrado con selector {i+1} después de esperar")
+                            link_found = True
+                            break
+                    except:
+                        continue
+            
+            # Si aún no encontramos el enlace, intentar navegar directamente (último recurso)
             if not link_found:
                 logger.warning("No se encontró el enlace 'e-Servicios SRT', intentando navegar directamente...")
                 try:
@@ -474,22 +491,45 @@ class PlaywrightService:
                         logger.debug(f"Contenido de la página (primeros 500 chars): {page_content[:500]}")
                         raise Exception("No se pudo encontrar el enlace 'e-Servicios SRT' ni navegar directamente. El login puede haber fallado o la página cambió.")
             
-            # Si encontramos el enlace, hacer clic en él
+            # Si encontramos el enlace, hacer clic en él (MEJOR que navegar directamente)
             if link_found and servicios_link is not None and servicios_page is None:
+                logger.info("Enlace encontrado, simulando comportamiento humano antes de hacer clic...")
+                # Simular comportamiento humano antes de hacer clic
+                try:
+                    # Mover el mouse sobre el enlace
+                    if hasattr(servicios_link, 'first'):
+                        link_element = servicios_link.first
+                    else:
+                        link_element = servicios_link
+                    
+                    # Obtener posición del elemento y mover el mouse
+                    box = link_element.bounding_box()
+                    if box:
+                        login_page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                        time.sleep(random.uniform(0.5, 1.5))
+                    
+                    # Hacer hover sobre el enlace
+                    link_element.hover(timeout=self.TIMEOUT_FIELD_WAIT)
+                    time.sleep(random.uniform(0.3, 0.8))
+                except Exception as e:
+                    logger.debug(f"Error simulando hover: {e}")
+                
                 logger.info("Haciendo clic en enlace 'e-Servicios SRT'...")
                 try:
                     with login_page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
                         if hasattr(servicios_link, 'first'):
-                            servicios_link.first.click(timeout=self.TIMEOUT_FIELD_WAIT)
+                            servicios_link.first.click(timeout=self.TIMEOUT_FIELD_WAIT, delay=random.randint(50, 150))
                         else:
-                            servicios_link.click(timeout=self.TIMEOUT_FIELD_WAIT)
+                            servicios_link.click(timeout=self.TIMEOUT_FIELD_WAIT, delay=random.randint(50, 150))
                     servicios_page = popup_info.value
                     logger.info("Página de servicios abierta desde popup")
+                    time.sleep(random.uniform(1, 2))  # Esperar después de abrir popup
                 except Exception as e:
                     logger.warning(f"Error al hacer clic en el enlace, intentando navegar directamente: {e}")
+                    # Si falla el click, intentar navegar directamente como último recurso
                     try:
                         servicios_page = login_page.context.new_page()
-                        servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                        servicios_page.goto(self.ALICUOTAS_URL, wait_until="domcontentloaded", timeout=self.TIMEOUT_PAGE_LOAD)
                         logger.info("Navegación directa después de fallo de click exitosa")
                     except Exception as e2:
                         logger.error(f"Error en navegación directa: {e2}")
