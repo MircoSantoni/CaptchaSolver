@@ -178,14 +178,17 @@ class PlaywrightService:
             # Intentar múltiples formas de encontrar el enlace a e-Servicios SRT
             logger.info("Buscando enlace 'e-Servicios SRT'...")
             servicios_link = None
+            servicios_page = None
             
-            # Intentar diferentes selectores
+            # Intentar diferentes selectores y estrategias
             selectores = [
                 lambda p: p.locator("a:has-text('e-Servicios SRT')"),
                 lambda p: p.locator("a:has-text('e-Servicios')"),
                 lambda p: p.locator("a:has-text('SRT')"),
                 lambda p: p.locator("a[href*='srt']"),
                 lambda p: p.locator("a[href*='SRT']"),
+                lambda p: p.locator("a[href*='servicios']"),
+                lambda p: p.locator("a[href*='Servicios']"),
             ]
             
             for i, selector_func in enumerate(selectores):
@@ -198,24 +201,82 @@ class PlaywrightService:
                     logger.debug(f"Selector {i+1} falló: {e}")
                     continue
             
+            # Si no se encuentra el enlace, intentar buscar todos los enlaces y filtrar
             if servicios_link is None or servicios_link.count() == 0:
-                # Intentar obtener el HTML de la página para debugging
-                page_content = login_page.content()
-                logger.error(f"No se encontró el enlace 'e-Servicios SRT'. URL actual: {login_page.url}")
-                logger.error(f"Título de la página: {login_page.title()}")
-                # Log solo una porción del contenido para no saturar los logs
-                logger.debug(f"Contenido de la página (primeros 500 chars): {page_content[:500]}")
-                raise Exception("No se pudo encontrar el enlace 'e-Servicios SRT' después del login. El login puede haber fallado o la página cambió.")
+                logger.info("No se encontró con selectores específicos, buscando en todos los enlaces...")
+                try:
+                    all_links = login_page.locator("a").all()
+                    for link in all_links:
+                        try:
+                            text = link.inner_text(timeout=1000).lower()
+                            href = link.get_attribute("href") or ""
+                            if "srt" in text or "servicios" in text or "srt" in href.lower():
+                                logger.info(f"Enlace encontrado por texto/href: {text[:50]} - {href[:50]}")
+                                servicios_link = link
+                                break
+                        except:
+                            continue
+                except Exception as e:
+                    logger.debug(f"Error buscando en todos los enlaces: {e}")
             
-            logger.info("Haciendo clic en enlace 'e-Servicios SRT'...")
-            with login_page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
-                servicios_link.first.click(timeout=self.TIMEOUT_FIELD_WAIT)
-            servicios_page = popup_info.value
-            logger.info("Página de servicios abierta")
+            # Si aún no se encuentra, intentar navegar directamente a la URL de servicios
+            if servicios_link is None or servicios_link.count() == 0:
+                logger.warning("No se encontró el enlace 'e-Servicios SRT', intentando navegar directamente...")
+                try:
+                    # Intentar navegar directamente a la URL de servicios SRT
+                    logger.info(f"Navegando directamente a {self.ALICUOTAS_URL}")
+                    servicios_page = login_page.context.new_page()
+                    servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                    logger.info("Navegación directa exitosa")
+                except Exception as e:
+                    logger.error(f"Error al navegar directamente: {e}")
+                    # Si falla, intentar desde la página actual
+                    try:
+                        servicios_page = login_page.context.new_page()
+                        servicios_page.goto("https://eservicios.srt.gob.ar", wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                        logger.info("Navegación a dominio SRT exitosa")
+                    except Exception as e2:
+                        logger.error(f"Error al navegar al dominio SRT: {e2}")
+                        # Intentar obtener el HTML de la página para debugging
+                        page_content = login_page.content()
+                        logger.error(f"No se encontró el enlace 'e-Servicios SRT'. URL actual: {login_page.url}")
+                        logger.error(f"Título de la página: {login_page.title()}")
+                        # Log solo una porción del contenido para no saturar los logs
+                        logger.debug(f"Contenido de la página (primeros 500 chars): {page_content[:500]}")
+                        raise Exception("No se pudo encontrar el enlace 'e-Servicios SRT' ni navegar directamente. El login puede haber fallado o la página cambió.")
+            
+            # Si encontramos el enlace, hacer clic en él
+            if servicios_link is not None and servicios_link.count() > 0 and servicios_page is None:
+                logger.info("Haciendo clic en enlace 'e-Servicios SRT'...")
+                try:
+                    with login_page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
+                        if hasattr(servicios_link, 'first'):
+                            servicios_link.first.click(timeout=self.TIMEOUT_FIELD_WAIT)
+                        else:
+                            servicios_link.click(timeout=self.TIMEOUT_FIELD_WAIT)
+                    servicios_page = popup_info.value
+                    logger.info("Página de servicios abierta desde popup")
+                except Exception as e:
+                    logger.warning(f"Error al hacer clic en el enlace, intentando navegar directamente: {e}")
+                    try:
+                        servicios_page = login_page.context.new_page()
+                        servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                        logger.info("Navegación directa después de fallo de click exitosa")
+                    except Exception as e2:
+                        logger.error(f"Error en navegación directa: {e2}")
+                        raise
+            
+            # Verificar que tenemos una página de servicios antes de continuar
+            if servicios_page is None:
+                raise Exception("No se pudo obtener la página de servicios después del login")
             
             logger.info("Haciendo clic en botón de servicios...")
-            servicios_page.locator(self.SELECTOR_SERVICIOS_BUTTON).click(timeout=self.TIMEOUT_FIELD_WAIT)
-            logger.info("Botón de servicios clickeado")
+            try:
+                servicios_page.locator(self.SELECTOR_SERVICIOS_BUTTON).click(timeout=self.TIMEOUT_FIELD_WAIT)
+                logger.info("Botón de servicios clickeado")
+            except Exception as e:
+                logger.warning(f"No se pudo hacer clic en el botón de servicios: {e}")
+                # Continuar de todas formas, puede que ya estemos en la página correcta
             
             try:
                 servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, timeout=self.TIMEOUT_PAGE_LOAD)
