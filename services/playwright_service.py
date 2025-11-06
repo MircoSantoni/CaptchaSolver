@@ -157,17 +157,31 @@ class PlaywrightService:
             except Exception as e:
                 logger.warning(f"No se pudo aplicar stealth: {e}")
         
-        # Aplicar scripts adicionales anti-detección
+        # Aplicar scripts adicionales anti-detección mejorados
         try:
             context.add_init_script("""
-                // Ocultar webdriver
+                // Ocultar webdriver completamente
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
                 
-                // Modificar plugins
+                // Eliminar rastros de webdriver
+                delete navigator.__proto__.webdriver;
+                
+                // Modificar plugins para parecer real
                 Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
+                    get: () => {
+                        const plugins = [];
+                        for (let i = 0; i < 5; i++) {
+                            plugins.push({
+                                name: `Plugin ${i}`,
+                                description: `Plugin ${i} Description`,
+                                filename: `plugin${i}.dll`,
+                                length: 1
+                            });
+                        }
+                        return plugins;
+                    }
                 });
                 
                 // Modificar languages
@@ -183,10 +197,43 @@ class PlaywrightService:
                         originalQuery(parameters)
                 );
                 
-                // Chrome runtime
+                // Chrome runtime completo
                 window.chrome = {
-                    runtime: {}
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
                 };
+                
+                // Ocultar automation
+                Object.defineProperty(navigator, 'automation', {
+                    get: () => undefined
+                });
+                
+                // Modificar platform
+                Object.defineProperty(navigator, 'platform', {
+                    get: () => 'Win32'
+                });
+                
+                // Modificar hardwareConcurrency
+                Object.defineProperty(navigator, 'hardwareConcurrency', {
+                    get: () => 8
+                });
+                
+                // Modificar deviceMemory
+                Object.defineProperty(navigator, 'deviceMemory', {
+                    get: () => 8
+                });
+                
+                // Modificar connection
+                Object.defineProperty(navigator, 'connection', {
+                    get: () => ({
+                        effectiveType: '4g',
+                        rtt: 50,
+                        downlink: 10,
+                        saveData: false
+                    })
+                });
             """)
         except Exception as e:
             logger.debug(f"Error aplicando scripts anti-detección: {e}")
@@ -254,9 +301,19 @@ class PlaywrightService:
             except Exception as e:
                 logger.warning(f"Timeout esperando carga de página post-login: {e}")
             
-            # Esperar más tiempo para que el portal cargue completamente
+            # Esperar más tiempo para que el portal cargue completamente y simular comportamiento humano
             logger.info("Esperando a que el portal cargue completamente...")
-            time.sleep(3)
+            # Simular comportamiento humano: scroll y movimientos del mouse
+            try:
+                login_page.evaluate("window.scrollTo(0, Math.random() * 300)")
+                time.sleep(random.uniform(1, 2))
+                login_page.mouse.move(random.randint(100, 800), random.randint(100, 600))
+                time.sleep(random.uniform(0.5, 1))
+                login_page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(random.uniform(1, 2))
+            except:
+                pass
+            time.sleep(random.uniform(2, 4))  # Delay aleatorio adicional
             
             # Intentar múltiples formas de encontrar el enlace a e-Servicios SRT
             logger.info("Buscando enlace 'e-Servicios SRT'...")
@@ -317,20 +374,31 @@ class PlaywrightService:
                     # Esto mantiene las cookies y la sesión, reduciendo detección de bot
                     logger.info("Usando la misma página del portal para mantener sesión...")
                     
-                    # Simular comportamiento humano: hacer scroll y mover el mouse
+                    # Simular comportamiento humano más realista antes de navegar
                     logger.info("Simulando comportamiento humano antes de navegar...")
                     try:
-                        login_page.evaluate("window.scrollTo(0, 100)")
-                        time.sleep(random.uniform(0.5, 1.5))
+                        # Múltiples movimientos de scroll y mouse para parecer más humano
+                        for _ in range(random.randint(2, 4)):
+                            scroll_y = random.randint(50, 400)
+                            login_page.evaluate(f"window.scrollTo(0, {scroll_y})")
+                            time.sleep(random.uniform(0.3, 0.8))
+                            login_page.mouse.move(random.randint(100, 900), random.randint(100, 700))
+                            time.sleep(random.uniform(0.2, 0.5))
                         login_page.evaluate("window.scrollTo(0, 0)")
-                        time.sleep(random.uniform(0.3, 0.8))
+                        time.sleep(random.uniform(1, 2))
                     except:
                         pass
+                    
+                    # Esperar un tiempo aleatorio antes de navegar (simula tiempo de lectura)
+                    wait_time = random.uniform(3, 6)
+                    logger.info(f"Esperando {wait_time:.1f}s antes de navegar (simulando lectura)...")
+                    time.sleep(wait_time)
                     
                     # Intentar navegar usando la misma página (mantiene cookies/sesión)
                     logger.info(f"Navegando a {self.ALICUOTAS_URL} usando la misma sesión...")
                     servicios_page = login_page
-                    servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                    servicios_page.goto(self.ALICUOTAS_URL, wait_until="domcontentloaded", timeout=self.TIMEOUT_PAGE_LOAD)
+                    time.sleep(random.uniform(1, 2))  # Esperar después de navegar
                     
                     # Verificar que no fuimos redirigidos (detección de bot)
                     final_url = servicios_page.url
