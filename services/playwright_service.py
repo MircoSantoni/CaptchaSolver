@@ -4,7 +4,7 @@ import time
 import re
 from typing import List, Optional, Dict
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
+from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, expect
 import logging
 
 # Intentar importar playwright_stealth (versión < 2.0.0 usa stealth_sync como función)
@@ -65,10 +65,11 @@ class PlaywrightService:
     SELECTOR_SERVICIOS_BUTTON = "[id=\"\\31 1\"]"
     
     # Timeouts (en segundos)
-    TIMEOUT_PAGE_LOAD = 8000
-    TIMEOUT_FIELD_WAIT = 5000
-    TIMEOUT_FRAME_WAIT = 8000
+    TIMEOUT_PAGE_LOAD = 30000
+    TIMEOUT_FIELD_WAIT = 15000
+    TIMEOUT_FRAME_WAIT = 20000
     TIMEOUT_EXTRACTION = 5.0
+    TIMEOUT_LOGIN = 60000  # Timeout para el proceso completo de login
     
     # Delays (en segundos)
     DELAY_SHORT = 0.1
@@ -138,36 +139,103 @@ class PlaywrightService:
     
     def _realizar_login(self, page: Page) -> Page:
         """Realiza el proceso de login y retorna la página de servicios."""
-        page.goto(self.LOGIN_URL)
-        
-        with page.expect_popup() as popup_info:
-            page.get_by_role("link", name="Iniciar sesión").click()
-        login_page = popup_info.value
-        
-        login_page.get_by_role("spinbutton").fill(self.username)
-        login_page.get_by_role("spinbutton").click()
-        login_page.get_by_role("button", name="Siguiente").click()
-        time.sleep(self.DELAY_LONG)
-        
-        login_page.get_by_label("TU CLAVE").click()
-        login_page.get_by_label("TU CLAVE").fill(self.password)
-        login_page.get_by_role("button", name="Ingresar").click()
-        time.sleep(1)
-        
-        with login_page.expect_popup() as popup_info:
-            login_page.locator("a").filter(has_text="e-Servicios SRT").click()
-        servicios_page = popup_info.value
-        
-        servicios_page.locator(self.SELECTOR_SERVICIOS_BUTTON).click()
-        
         try:
-            servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, timeout=self.TIMEOUT_PAGE_LOAD)
-            logger.info("Página y captcha cargados completamente")
+            logger.info(f"Accediendo a {self.LOGIN_URL}...")
+            page.goto(self.LOGIN_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+            logger.info("Página de login cargada")
+            
+            logger.info("Buscando enlace 'Iniciar sesión'...")
+            with page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
+                page.get_by_role("link", name="Iniciar sesión").click(timeout=self.TIMEOUT_FIELD_WAIT)
+            login_page = popup_info.value
+            logger.info("Popup de login abierto")
+            
+            logger.info("Ingresando usuario...")
+            login_page.get_by_role("spinbutton").fill(self.username, timeout=self.TIMEOUT_FIELD_WAIT)
+            login_page.get_by_role("spinbutton").click(timeout=self.TIMEOUT_FIELD_WAIT)
+            login_page.get_by_role("button", name="Siguiente").click(timeout=self.TIMEOUT_FIELD_WAIT)
+            time.sleep(self.DELAY_LONG)
+            logger.info("Usuario ingresado, esperando campo de contraseña...")
+            
+            logger.info("Ingresando contraseña...")
+            login_page.get_by_label("TU CLAVE").click(timeout=self.TIMEOUT_FIELD_WAIT)
+            login_page.get_by_label("TU CLAVE").fill(self.password, timeout=self.TIMEOUT_FIELD_WAIT)
+            login_page.get_by_role("button", name="Ingresar").click(timeout=self.TIMEOUT_FIELD_WAIT)
+            logger.info("Contraseña ingresada, esperando respuesta del servidor...")
+            
+            # Esperar más tiempo después del login para que la página procese
+            time.sleep(3)
+            
+            # Verificar que el login fue exitoso - esperar a que aparezca algún elemento de la página post-login
+            logger.info("Verificando que el login fue exitoso...")
+            try:
+                # Esperar a que la página cambie o aparezca algún elemento característico
+                login_page.wait_for_load_state("networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+                logger.info("Página post-login cargada")
+            except Exception as e:
+                logger.warning(f"Timeout esperando carga de página post-login: {e}")
+            
+            # Intentar múltiples formas de encontrar el enlace a e-Servicios SRT
+            logger.info("Buscando enlace 'e-Servicios SRT'...")
+            servicios_link = None
+            
+            # Intentar diferentes selectores
+            selectores = [
+                lambda p: p.locator("a:has-text('e-Servicios SRT')"),
+                lambda p: p.locator("a:has-text('e-Servicios')"),
+                lambda p: p.locator("a:has-text('SRT')"),
+                lambda p: p.locator("a[href*='srt']"),
+                lambda p: p.locator("a[href*='SRT']"),
+            ]
+            
+            for i, selector_func in enumerate(selectores):
+                try:
+                    servicios_link = selector_func(login_page)
+                    if servicios_link.count() > 0:
+                        logger.info(f"Enlace encontrado con selector {i+1}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Selector {i+1} falló: {e}")
+                    continue
+            
+            if servicios_link is None or servicios_link.count() == 0:
+                # Intentar obtener el HTML de la página para debugging
+                page_content = login_page.content()
+                logger.error(f"No se encontró el enlace 'e-Servicios SRT'. URL actual: {login_page.url}")
+                logger.error(f"Título de la página: {login_page.title()}")
+                # Log solo una porción del contenido para no saturar los logs
+                logger.debug(f"Contenido de la página (primeros 500 chars): {page_content[:500]}")
+                raise Exception("No se pudo encontrar el enlace 'e-Servicios SRT' después del login. El login puede haber fallado o la página cambió.")
+            
+            logger.info("Haciendo clic en enlace 'e-Servicios SRT'...")
+            with login_page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
+                servicios_link.first.click(timeout=self.TIMEOUT_FIELD_WAIT)
+            servicios_page = popup_info.value
+            logger.info("Página de servicios abierta")
+            
+            logger.info("Haciendo clic en botón de servicios...")
+            servicios_page.locator(self.SELECTOR_SERVICIOS_BUTTON).click(timeout=self.TIMEOUT_FIELD_WAIT)
+            logger.info("Botón de servicios clickeado")
+            
+            try:
+                servicios_page.wait_for_selector(self.SELECTOR_CAPTCHA_IFRAME, timeout=self.TIMEOUT_PAGE_LOAD)
+                logger.info("Página y captcha cargados completamente")
+            except Exception as e:
+                logger.warning(f"No se pudo verificar carga del captcha: {e}")
+                time.sleep(2)
+            
+            return servicios_page
+            
         except Exception as e:
-            logger.warning(f"No se pudo verificar carga del captcha: {e}")
-            time.sleep(1)
-        
-        return servicios_page
+            logger.error(f"Error durante el proceso de login: {e}", exc_info=True)
+            # Intentar capturar el estado de la página para debugging
+            try:
+                if 'login_page' in locals():
+                    logger.error(f"URL de login_page al error: {login_page.url}")
+                    logger.error(f"Título: {login_page.title()}")
+            except:
+                pass
+            raise
     
     def inicializar_sesion(self):
         """Inicializa la sesión del navegador y realiza el login."""
