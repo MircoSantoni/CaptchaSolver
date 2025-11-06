@@ -179,6 +179,7 @@ class PlaywrightService:
             logger.info("Buscando enlace 'e-Servicios SRT'...")
             servicios_link = None
             servicios_page = None
+            link_found = False
             
             # Intentar diferentes selectores y estrategias
             selectores = [
@@ -194,15 +195,17 @@ class PlaywrightService:
             for i, selector_func in enumerate(selectores):
                 try:
                     servicios_link = selector_func(login_page)
-                    if servicios_link.count() > 0:
+                    count = servicios_link.count()
+                    if count > 0:
                         logger.info(f"Enlace encontrado con selector {i+1}")
+                        link_found = True
                         break
                 except Exception as e:
                     logger.debug(f"Selector {i+1} falló: {e}")
                     continue
             
             # Si no se encuentra el enlace, intentar buscar todos los enlaces y filtrar
-            if servicios_link is None or servicios_link.count() == 0:
+            if not link_found:
                 logger.info("No se encontró con selectores específicos, buscando en todos los enlaces...")
                 try:
                     all_links = login_page.locator("a").all()
@@ -213,14 +216,15 @@ class PlaywrightService:
                             if "srt" in text or "servicios" in text or "srt" in href.lower():
                                 logger.info(f"Enlace encontrado por texto/href: {text[:50]} - {href[:50]}")
                                 servicios_link = link
+                                link_found = True
                                 break
                         except:
                             continue
                 except Exception as e:
                     logger.debug(f"Error buscando en todos los enlaces: {e}")
             
-            # Si aún no se encuentra, intentar navegar directamente a la URL de servicios
-            if servicios_link is None or servicios_link.count() == 0:
+            # SIEMPRE intentar navegar directamente si no se encontró el enlace
+            if not link_found:
                 logger.warning("No se encontró el enlace 'e-Servicios SRT', intentando navegar directamente...")
                 try:
                     # Intentar navegar directamente a la URL de servicios SRT
@@ -246,7 +250,7 @@ class PlaywrightService:
                         raise Exception("No se pudo encontrar el enlace 'e-Servicios SRT' ni navegar directamente. El login puede haber fallado o la página cambió.")
             
             # Si encontramos el enlace, hacer clic en él
-            if servicios_link is not None and servicios_link.count() > 0 and servicios_page is None:
+            if link_found and servicios_link is not None and servicios_page is None:
                 logger.info("Haciendo clic en enlace 'e-Servicios SRT'...")
                 try:
                     with login_page.expect_popup(timeout=self.TIMEOUT_PAGE_LOAD) as popup_info:
