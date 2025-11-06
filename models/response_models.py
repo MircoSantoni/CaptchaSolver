@@ -8,3 +8,4 @@ class CuitResponse(BaseModel):
     nombre: Optional[str] = None
     error: Optional[str] = None
 
+
