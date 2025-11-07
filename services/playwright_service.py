@@ -7,28 +7,20 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, expect
 import logging
 
-# Intentar importar playwright_stealth (versión < 2.0.0 usa stealth_sync como función)
 STEALTH_AVAILABLE = False
 stealth_sync_func = None
 
 try:
-    # Para playwright-stealth < 2.0.0: stealth_sync es una función
     from playwright_stealth import stealth_sync as stealth_sync_func
     STEALTH_AVAILABLE = True
-except ImportError:
+except (ImportError, AttributeError):
     try:
-        # Alternativa: desde el submódulo
-        from playwright_stealth.stealth import stealth_sync as stealth_sync_func
-        STEALTH_AVAILABLE = True
+        import playwright_stealth
+        if hasattr(playwright_stealth, 'stealth_sync'):
+            stealth_sync_func = playwright_stealth.stealth_sync
+            STEALTH_AVAILABLE = True
     except (ImportError, AttributeError):
-        try:
-            # Intentar importar el módulo completo
-            import playwright_stealth
-            if hasattr(playwright_stealth, 'stealth_sync'):
-                stealth_sync_func = playwright_stealth.stealth_sync
-                STEALTH_AVAILABLE = True
-        except (ImportError, AttributeError):
-            logging.warning("playwright_stealth no disponible, continuando sin stealth")
+        pass
 
 from services.twocaptcha_service import TwoCaptchaService
 
@@ -147,6 +139,20 @@ class PlaywrightService:
                 "Cache-Control": "max-age=0"
             }
         }
+    
+    def _simular_comportamiento_humano(self, page: Page):
+        """Simula comportamiento humano: scroll y movimientos del mouse."""
+        try:
+            for _ in range(random.randint(2, 4)):
+                scroll_y = random.randint(50, 400)
+                page.evaluate(f"window.scrollTo(0, {scroll_y})")
+                time.sleep(random.uniform(0.3, 0.8))
+                page.mouse.move(random.randint(100, 900), random.randint(100, 700))
+                time.sleep(random.uniform(0.2, 0.5))
+            page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(random.uniform(1, 2))
+        except:
+            pass
     
     def _apply_stealth(self, context: BrowserContext):
         """Aplica configuración stealth al contexto."""
@@ -301,19 +307,10 @@ class PlaywrightService:
             except Exception as e:
                 logger.warning(f"Timeout esperando carga de página post-login: {e}")
             
-            # Esperar más tiempo para que el portal cargue completamente y simular comportamiento humano
+            # Esperar más tiempo para que el portal cargue completamente
             logger.info("Esperando a que el portal cargue completamente...")
-            # Simular comportamiento humano: scroll y movimientos del mouse
-            try:
-                login_page.evaluate("window.scrollTo(0, Math.random() * 300)")
-                time.sleep(random.uniform(1, 2))
-                login_page.mouse.move(random.randint(100, 800), random.randint(100, 600))
-                time.sleep(random.uniform(0.5, 1))
-                login_page.evaluate("window.scrollTo(0, 0)")
-                time.sleep(random.uniform(1, 2))
-            except:
-                pass
-            time.sleep(random.uniform(2, 4))  # Delay aleatorio adicional
+            self._simular_comportamiento_humano(login_page)
+            time.sleep(random.uniform(2, 4))
             
             # Intentar múltiples formas de encontrar el enlace a e-Servicios SRT
             logger.info("Buscando enlace 'e-Servicios SRT'...")
@@ -391,25 +388,9 @@ class PlaywrightService:
                     # Esto mantiene las cookies y la sesión, reduciendo detección de bot
                     logger.info("Usando la misma página del portal para mantener sesión...")
                     
-                    # Simular comportamiento humano más realista antes de navegar
                     logger.info("Simulando comportamiento humano antes de navegar...")
-                    try:
-                        # Múltiples movimientos de scroll y mouse para parecer más humano
-                        for _ in range(random.randint(2, 4)):
-                            scroll_y = random.randint(50, 400)
-                            login_page.evaluate(f"window.scrollTo(0, {scroll_y})")
-                            time.sleep(random.uniform(0.3, 0.8))
-                            login_page.mouse.move(random.randint(100, 900), random.randint(100, 700))
-                            time.sleep(random.uniform(0.2, 0.5))
-                        login_page.evaluate("window.scrollTo(0, 0)")
-                        time.sleep(random.uniform(1, 2))
-                    except:
-                        pass
-                    
-                    # Esperar un tiempo aleatorio antes de navegar (simula tiempo de lectura)
-                    wait_time = random.uniform(3, 6)
-                    logger.info(f"Esperando {wait_time:.1f}s antes de navegar (simulando lectura)...")
-                    time.sleep(wait_time)
+                    self._simular_comportamiento_humano(login_page)
+                    time.sleep(random.uniform(3, 6))
                     
                     # Intentar navegar usando la misma página (mantiene cookies/sesión)
                     logger.info(f"Navegando a {self.ALICUOTAS_URL} usando la misma sesión...")
@@ -420,99 +401,33 @@ class PlaywrightService:
                     # Verificar que no fuimos redirigidos (detección de bot)
                     final_url = servicios_page.url
                     page_title = servicios_page.title()
-                    logger.info(f"URL final después de navegación: {final_url}")
-                    logger.info(f"Título de la página: {page_title}")
+                    logger.info(f"URL final: {final_url}, Título: {page_title}")
                     
                     # Detectar si fuimos redirigidos a una página de error
                     if "errorvalidate" in final_url.lower() or "error" in page_title.lower():
-                        logger.error(f"Redirección a página de error detectada: {final_url} - {page_title}")
-                        logger.error("El sitio está detectando el bot y bloqueando el acceso")
-                        logger.info("Intentando estrategia alternativa: usar el contexto de la sesión del portal...")
-                        
-                        # ESTRATEGIA: Usar la misma página del portal (mantiene cookies/sesión)
-                        logger.info("Usando la misma página del portal para mantener cookies y sesión...")
-                        servicios_page = login_page
-                        
-                        # Simular comportamiento humano antes de navegar
-                        logger.info("Simulando interacción humana...")
-                        try:
-                            # Hacer scroll
-                            servicios_page.evaluate("window.scrollTo(0, Math.random() * 200)")
-                            time.sleep(random.uniform(1, 2))
-                            # Mover mouse (simulado)
-                            servicios_page.mouse.move(random.randint(100, 500), random.randint(100, 500))
-                            time.sleep(random.uniform(0.5, 1.5))
-                        except:
-                            pass
-                        
-                        # Esperar un poco más para simular comportamiento humano
-                        time.sleep(random.uniform(2, 4))
-                        
-                        # Intentar navegar de nuevo usando la misma página
-                        logger.info("Reintentando navegación con la misma sesión...")
-                        servicios_page.goto(self.ALICUOTAS_URL, wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
-                        final_url = servicios_page.url
-                        page_title = servicios_page.title()
-                        logger.info(f"URL después de segundo intento: {final_url}")
-                        logger.info(f"Título después de segundo intento: {page_title}")
-                        
-                        if "errorvalidate" in final_url.lower() or "error" in page_title.lower():
-                            logger.error("Segundo intento también resultó en error. El sitio está bloqueando el acceso.")
-                            raise Exception(f"El sitio está bloqueando el acceso (redirigido a: {final_url}). Puede ser detección de bot.")
+                        logger.error(f"Redirección a página de error: {final_url}")
+                        raise Exception(f"El sitio está bloqueando el acceso (redirigido a: {final_url}). Puede ser detección de bot.")
                     
-                    if "alicuotas" not in final_url.lower() and "srt" not in final_url.lower() and "error" not in final_url.lower():
+                    if "alicuotas" not in final_url.lower() and "srt" not in final_url.lower():
                         logger.warning(f"URL final diferente a la esperada: {final_url}")
-                        logger.warning("Esto puede indicar detección de bot. Intentando esperar y recargar...")
-                        time.sleep(3)
-                        servicios_page.reload(wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
-                        final_url = servicios_page.url
-                        logger.info(f"URL después de recargar: {final_url}")
-                    
-                    if final_url == self.ALICUOTAS_URL or "alicuotas" in final_url.lower():
-                        logger.info("Navegación directa exitosa, estamos en la página correcta")
-                    elif "error" not in final_url.lower():
-                        logger.warning(f"URL final diferente a la esperada, pero continuando: {final_url}")
                         
                 except Exception as e:
                     logger.error(f"Error al navegar directamente: {e}")
-                    # Si falla, intentar desde la página actual
-                    try:
-                        servicios_page = login_page.context.new_page()
-                        servicios_page.goto("https://eservicios.srt.gob.ar", wait_until="networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
-                        logger.info("Navegación a dominio SRT exitosa")
-                        time.sleep(2)  # Esperar antes de continuar
-                    except Exception as e2:
-                        logger.error(f"Error al navegar al dominio SRT: {e2}")
-                        # Intentar obtener el HTML de la página para debugging
-                        page_content = login_page.content()
-                        logger.error(f"No se encontró el enlace 'e-Servicios SRT'. URL actual: {login_page.url}")
-                        logger.error(f"Título de la página: {login_page.title()}")
-                        # Log solo una porción del contenido para no saturar los logs
-                        logger.debug(f"Contenido de la página (primeros 500 chars): {page_content[:500]}")
-                        raise Exception("No se pudo encontrar el enlace 'e-Servicios SRT' ni navegar directamente. El login puede haber fallado o la página cambió.")
+                    raise
             
             # Si encontramos el enlace, hacer clic en él (MEJOR que navegar directamente)
             if link_found and servicios_link is not None and servicios_page is None:
-                logger.info("Enlace encontrado, simulando comportamiento humano antes de hacer clic...")
-                # Simular comportamiento humano antes de hacer clic
+                logger.info("Enlace encontrado, simulando hover antes de hacer clic...")
                 try:
-                    # Mover el mouse sobre el enlace
-                    if hasattr(servicios_link, 'first'):
-                        link_element = servicios_link.first
-                    else:
-                        link_element = servicios_link
-                    
-                    # Obtener posición del elemento y mover el mouse
+                    link_element = servicios_link.first if hasattr(servicios_link, 'first') else servicios_link
                     box = link_element.bounding_box()
                     if box:
                         login_page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
                         time.sleep(random.uniform(0.5, 1.5))
-                    
-                    # Hacer hover sobre el enlace
                     link_element.hover(timeout=self.TIMEOUT_FIELD_WAIT)
                     time.sleep(random.uniform(0.3, 0.8))
-                except Exception as e:
-                    logger.debug(f"Error simulando hover: {e}")
+                except:
+                    pass
                 
                 logger.info("Haciendo clic en enlace 'e-Servicios SRT'...")
                 try:
@@ -525,46 +440,24 @@ class PlaywrightService:
                     logger.info("Página de servicios abierta desde popup")
                     time.sleep(random.uniform(1, 2))  # Esperar después de abrir popup
                 except Exception as e:
-                    logger.warning(f"Error al hacer clic en el enlace, intentando navegar directamente: {e}")
-                    # Si falla el click, intentar navegar directamente como último recurso
-                    try:
-                        servicios_page = login_page.context.new_page()
-                        servicios_page.goto(self.ALICUOTAS_URL, wait_until="domcontentloaded", timeout=self.TIMEOUT_PAGE_LOAD)
-                        logger.info("Navegación directa después de fallo de click exitosa")
-                    except Exception as e2:
-                        logger.error(f"Error en navegación directa: {e2}")
-                        raise
+                    logger.error(f"Error al hacer clic en el enlace: {e}")
+                    raise
             
             # Verificar que tenemos una página de servicios antes de continuar
             if servicios_page is None:
                 raise Exception("No se pudo obtener la página de servicios después del login")
             
-            # Si navegamos directamente, ya estamos en la página de alícuotas, no necesitamos hacer clic en botones
-            if not link_found:
-                logger.info("Navegación directa realizada, verificando que estamos en la página correcta...")
-                # Ya estamos en la URL de alícuotas, solo verificamos que cargó
-                try:
-                    servicios_page.wait_for_load_state("networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
-                    logger.info("Página de alícuotas cargada correctamente")
-                    
-                    # Verificar que la página tiene el contenido esperado (no fue bloqueada)
-                    page_title = servicios_page.title()
-                    logger.info(f"Título de la página: {page_title}")
-                    
-                    # Esperar un poco más para que cualquier script de detección se ejecute
-                    time.sleep(2)
-                    
-                except Exception as e:
-                    logger.warning(f"Timeout esperando carga de página: {e}")
-            else:
-                # Si encontramos el enlace y lo clickeamos, entonces sí necesitamos hacer clic en el botón
-                logger.info("Haciendo clic en botón de servicios...")
+            # Si encontramos el enlace y lo clickeamos, hacer clic en el botón de servicios
+            if link_found:
                 try:
                     servicios_page.locator(self.SELECTOR_SERVICIOS_BUTTON).click(timeout=self.TIMEOUT_FIELD_WAIT)
                     logger.info("Botón de servicios clickeado")
                 except Exception as e:
                     logger.warning(f"No se pudo hacer clic en el botón de servicios: {e}")
-                    # Continuar de todas formas, puede que ya estemos en la página correcta
+            
+            # Esperar a que la página cargue
+            servicios_page.wait_for_load_state("networkidle", timeout=self.TIMEOUT_PAGE_LOAD)
+            time.sleep(2)
             
             # Esperar a que el captcha aparezca y resolverlo inmediatamente
             logger.info("Esperando a que el captcha aparezca para resolverlo...")
